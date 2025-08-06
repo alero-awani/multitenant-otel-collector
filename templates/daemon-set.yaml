@@ -1,0 +1,175 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-collector
+  namespace: otel-collector
+  labels:
+    app.kubernetes.io/name: otel-collector
+  annotations:
+    helm.sh/hook-weight: "20"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-collector
+    spec:
+      serviceAccountName: otel-collector
+      containers:
+        - name: otel-collector
+          image: {{ .Values.global.image.repository }}:{{ .Values.global.image.tag }}
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          args:
+            - --config=/conf/collector.yaml
+          env:
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: collector-config
+              mountPath: /conf
+        # ways to make this dynamic
+          ports:
+            - containerPort: 4317
+              hostPort: 4328
+              protocol: TCP
+            - containerPort: 4318
+              hostPort: 4329
+              protocol: TCP
+            - containerPort: 8889
+              hostPort: 8889
+              protocol: TCP
+      volumes:
+        - name: collector-config
+          configMap:
+            name: otel-collector-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: otel-collector
+data:
+  collector.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: ${env:MY_POD_IP}:4317
+          http:
+            endpoint: ${env:MY_POD_IP}:4318
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: "daemonset-collector"
+              scrape_interval: 10s
+              kubernetes_sd_configs:
+                - role: pod
+              relabel_configs:
+                # Filter by pod label
+                - source_labels: [__meta_kubernetes_pod_label_tenant_id]
+                  regex: (.+)
+                  action: keep
+
+                # Add metadata as labels
+                - source_labels: [__meta_kubernetes_namespace]
+                  action: replace
+                  target_label: namespace
+                - source_labels: [__meta_kubernetes_pod_name]
+                  action: replace
+                  target_label: pod
+
+                # Extract tenant_id from pod label to metric label
+                - source_labels: [__meta_kubernetes_pod_label_tenant_id]
+                  action: replace
+                  target_label: tenant_id
+
+                # Configure ports and discovery for common port names
+                - source_labels: [__meta_kubernetes_pod_container_port_name]
+                  action: keep
+                  regex: metrics|prometheus|web|http|api
+
+    processors:
+      batch:
+        timeout: 10s
+        send_batch_size: 1024
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      k8sattributes:
+        passthrough: false
+        extract:
+          labels:
+            - tag_name: tenant_id
+              key: tenant_id
+              from: namespace
+          metadata:
+            - k8s.pod.name
+            - k8s.namespace.name
+            - k8s.node.name
+      resource:
+        attributes:
+          - action: upsert
+            key: source
+            value: "otel-collector-daemonset"
+
+    exporters:
+      otlp:
+        endpoint: {{ $.Values.gateway.endpoint | quote }}
+        tls:
+          insecure: true
+      debug:
+        verbosity: normal
+
+    service:
+      pipelines:
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [k8sattributes, resource, memory_limiter, batch]
+          exporters: [otlp, debug]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: otel-collector
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - namespaces
+      - nodes
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - replicasets
+      - deployments
+      - namespaces
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: otel-collector

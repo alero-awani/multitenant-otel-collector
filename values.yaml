@@ -1,0 +1,65 @@
+opentelemetry-collector:
+  enabled: false
+  presets:
+    # enables the k8sattributesprocessor and adds it to the traces, metrics, and logs pipelines
+    kubernetesAttributes:
+      enabled: true
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: latest
+    pullPolicy: IfNotPresent
+  mode: "deployment"
+  configMap:
+    # Specifies whether a configMap should be created (true by default)
+    create: false
+
+
+global:
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  receivers: 
+   #daemonset receiver => Prometheus
+
+# Prometheus endpoint for sending otlp data
+prometheus:
+  endpoint: "http://prometheus-kube-prometheus-prometheus.prometheus.svc.cluster.local:9090/api/v1/otlp"
+
+# Gateway configurations
+gateway:
+  endpoint: "otel-router-gateway.otel-collector.svc.cluster.local:4317"
+
+# Tenant structure definition
+tenants:
+  - id: tenant-a
+    name: "Data Team"
+    owner: "team-a@example.com"
+    namespaces:
+      - name: monitoring-cluster
+        description: "Tenant A primary namespace"
+  
+
+  - id: tenant-b
+    name: "DevOps Team"
+    owner: "team-b@example.com"
+    namespaces:
+      - name: monitoring-cluster
+        description: "Tenant B primary namespace"
+   
+  
+
+  - id: tenant-c
+    name: "Design Team"
+    owner: "team-c@example.com"
+    namespaces:
+      - name: tenant-c
+        description: "Tenant C primary namespace"
+
+  # - id: tenant-d
+  #   name: "Design Team"
+  #   owner: "team-c@example.com"
+  #   namespaces:
+  #     - name: tenant-d
+  #       description: "Tenant D primary namespace"
